@@ -241,8 +241,14 @@ std::vector<int32_t> TextTokenizer::encode(const std::string & text) const {
     // Convert text to GPT-2 unicode representation
     std::string unicode_text = bytes_to_unicode(text);
     
-    // Simple word splitting (no regex pre-tokenization for now)
-    // Split on spaces but keep the space with the following word (GPT-2 style)
+    // Split on spaces (GPT-2 style): keep the space with the following word.
+    // Special case: if the character following a space was originally a
+    // non-printable-ASCII byte (e.g. the first byte of a CJK UTF-8 sequence),
+    // its GPT-2-encoded representation occupies more than one UTF-8 byte in
+    // `unicode_text`. In that case we must NOT prepend the space (Ġ) to the
+    // non-ASCII word; instead the space becomes its own single-character word.
+    // This ensures Chinese/CJK characters are tokenised independently of any
+    // preceding space, matching the Qwen-2 pre-tokeniser behaviour.
     std::vector<std::string> words;
     std::string current_word;
     
@@ -251,13 +257,37 @@ std::vector<int32_t> TextTokenizer::encode(const std::string & text) const {
         size_t len = utf8_len(unicode_text[i]);
         std::string ch = unicode_text.substr(i, len);
         
-        // Check if this is a space (Ġ in GPT-2 encoding)
         if (ch == "Ġ") {
             if (!current_word.empty()) {
                 words.push_back(current_word);
                 current_word.clear();
             }
-            current_word = ch;  // Start new word with space
+            // Peek at the next character.
+            // In the GPT-2 byte encoding, original bytes 0x21–0x7E map to the
+            // same printable ASCII character (single UTF-8 byte, len==1).
+            // Bytes outside that range (including all non-ASCII multi-byte
+            // sequences such as CJK UTF-8) map to characters whose UTF-8
+            // representation is ≥2 bytes (len>1).
+            // Only attach the space to the following word when it appears to be
+            // a plain ASCII sequence.
+            size_t next_pos = i + len;
+            if (next_pos < unicode_text.size()) {
+                size_t next_len = utf8_len(unicode_text[next_pos]);
+                if (next_len == 1) {
+                    // ASCII character follows — standard GPT-2 space-prefix
+                    current_word = ch;
+                } else {
+                    // Non-ASCII character follows (e.g. CJK byte sequence)
+                    // Emit space as its own word so it gets its own token,
+                    // and start the CJK word without a space prefix.
+                    words.push_back("Ġ");
+                    // current_word stays empty; the non-ASCII char is added in
+                    // the next loop iteration.
+                }
+            } else {
+                // Space at end of text
+                current_word = ch;
+            }
         } else {
             current_word += ch;
         }

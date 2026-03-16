@@ -27,16 +27,52 @@ git submodule update --init --recursive
 
 ---
 
-## 2. Build Vendored GGML
+## 2. Build Options
 
-GGML must be built before the main project. On Windows there is no Metal, so omit `-DGGML_METAL=ON`.
+### 2a. Automatic GGML Build (recommended — one-step)
+
+With `QWEN3_TTS_BUILD_GGML=ON` (the default when the submodule is present),
+CMake will build GGML automatically as part of the main project.
+
+**CPU-only build (default)**
 
 ```powershell
-# Configure
-cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
+cmake -S . -B build
+cmake --build build --config Release -j4
+```
 
-# Build (Release config)
+**Vulkan GPU build** (requires Vulkan SDK installed)
+
+```powershell
+cmake -S . -B build -DQWEN3_TTS_VULKAN=ON
+cmake --build build --config Release -j4
+```
+
+> [!NOTE]
+> Install the [Vulkan SDK](https://vulkan.lunarg.com/) first. The `VULKAN_SDK`
+> environment variable must be set (the installer does this automatically).
+
+### 2b. Manual GGML Build (legacy / advanced)
+
+Build GGML separately first, then build the main project with
+`-DQWEN3_TTS_BUILD_GGML=OFF`.
+
+**CPU-only:**
+
+```powershell
+cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
 cmake --build ggml/build --config Release --target ggml ggml-base ggml-cpu -j4
+cmake -S . -B build -DQWEN3_TTS_BUILD_GGML=OFF
+cmake --build build --config Release -j4
+```
+
+**Vulkan GPU:**
+
+```powershell
+cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON
+cmake --build ggml/build --config Release --target ggml ggml-base ggml-cpu ggml-vulkan -j4
+cmake -S . -B build -DQWEN3_TTS_BUILD_GGML=OFF -DQWEN3_TTS_VULKAN=ON
+cmake --build build --config Release -j4
 ```
 
 Expected outputs under `ggml\build\src\Release\`:
@@ -45,6 +81,7 @@ Expected outputs under `ggml\build\src\Release\`:
 ggml.lib
 ggml-base.lib
 ggml-cpu.lib
+ggml-vulkan.lib   ← only when GGML_VULKAN=ON
 ```
 
 ---
@@ -60,14 +97,23 @@ Binaries will be in `build\Release\`:
 
 ```
 qwen3-tts-cli.exe
+qwen3-tts-server.exe    ← HTTP WebUI server
 qwen3tts.dll
 test_tokenizer.exe  test_encoder.exe  test_transformer.exe  test_decoder.exe
 ```
 
-### Optional: Enable timing instrumentation
+### Optional CMake flags
 
 ```powershell
+# Enable timing instrumentation
 cmake -S . -B build -DQWEN3_TTS_TIMING=ON
+
+# Vulkan GPU acceleration
+cmake -S . -B build -DQWEN3_TTS_VULKAN=ON
+
+# Disable WebUI server
+cmake -S . -B build -DQWEN3_TTS_WEBUI=OFF
+
 cmake --build build --config Release -j4
 ```
 
@@ -82,7 +128,8 @@ winget install xmake
 # or: Invoke-Expression (Invoke-Webrequest 'https://xmake.io/psget.text' -UseBasicParsing).Content
 ```
 
-Then, after GGML is built (step 2 above):
+> [!NOTE]
+> xmake uses **pre-built GGML** (build step 2b above first).
 
 ```powershell
 xmake
@@ -94,6 +141,8 @@ Optional flags:
 
 ```powershell
 xmake f --timing=y   # Enable timing instrumentation
+xmake f --vulkan=y   # Enable Vulkan GPU acceleration
+xmake f --webui=n    # Disable WebUI server
 xmake               # Rebuild
 ```
 
@@ -156,9 +205,14 @@ models\
 
 ## 6. Run Inference
 
+### CLI
+
 ```powershell
-# CMake build
+# Basic synthesis (English)
 .\build\Release\qwen3-tts-cli.exe -m models -t "Hello from Windows." -o hello.wav
+
+# Chinese synthesis — always pass -l zh for Chinese input
+.\build\Release\qwen3-tts-cli.exe -m models -t "你好，世界！" -l zh -o chinese.wav
 
 # xmake build
 .\build\windows\x64\release\qwen3-tts-cli.exe -m models -t "Hello from Windows." -o hello.wav
@@ -174,6 +228,15 @@ models\
     -o cloned.wav
 ```
 
+### WebUI server
+
+```powershell
+.\build\Release\qwen3-tts-server.exe -m models -p 8080
+```
+
+Then open **http://localhost:8080** in your browser. The page supports text
+input in any language including Chinese, voice cloning, and audio playback.
+
 ### CLI options
 
 | Flag | Description | Default |
@@ -182,11 +245,25 @@ models\
 | `-t, --text <text>` | Text to synthesize | (required) |
 | `-o, --output <file>` | Output WAV file path | `output.wav` |
 | `-r, --reference <file>` | Reference audio for voice cloning | (none) |
+| `-l, --language <lang>` | Language code: `en`,`zh`,`ja`,`ko`,`de`,`fr`,`es`,`ru`,`it`,`pt` | `en` |
 | `--temperature <val>` | Sampling temperature (0 = greedy) | 0.9 |
 | `--top-k <n>` | Top-k sampling (0 = disabled) | 50 |
 | `--max-tokens <n>` | Maximum audio frames to generate | 4096 |
 | `--repetition-penalty <val>` | Repetition penalty on codebook-0 | 1.05 |
 | `-j, --threads <n>` | Number of compute threads | 4 |
+
+> [!IMPORTANT]
+> **Chinese text**: Always specify `-l zh` when synthesizing Chinese (`-l en`
+> is the default). On Windows the CLI now uses the Windows wide-char API to
+> parse arguments so Chinese characters in `-t` are handled correctly.
+
+### WebUI server options (`qwen3-tts-server`)
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-m, --model <dir>` | Model directory | (required) |
+| `-p, --port <n>` | HTTP listen port | 8080 |
+| `-j, --threads <n>` | Default compute threads | 4 |
 
 ### Environment variable flags
 
