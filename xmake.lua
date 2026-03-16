@@ -1,7 +1,17 @@
 -- xmake.lua for qwen3-tts.cpp
 -- Prerequisites (mirrors AGENTS.md — build GGML once before xmake):
---   cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
---   cmake --build ggml/build --config Release --target ggml ggml-base ggml-cpu -j4
+--
+--   CPU-only (default):
+--     cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
+--     cmake --build ggml/build --config Release --target ggml ggml-base ggml-cpu -j4
+--
+--   Vulkan (GPU) build:
+--     cmake -S ggml -B ggml/build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON
+--     cmake --build ggml/build --config Release --target ggml ggml-base ggml-cpu ggml-vulkan -j4
+--     xmake f --vulkan=y && xmake
+--
+-- Note: with CMake (recommended), set -DQWEN3_TTS_BUILD_GGML=ON to have
+--       CMake build GGML automatically; -DQWEN3_TTS_VULKAN=ON for Vulkan.
 
 set_project("qwen3-tts-ggml")
 set_version("0.1.0")
@@ -19,6 +29,8 @@ end
 -- ---------------------------------------------------------------------------
 option("timing", {description = "Enable detailed timing instrumentation", default = false})
 option("coreml", {description = "Enable CoreML code predictor bridge (macOS only)", default = true})
+option("vulkan", {description = "Enable Vulkan GPU acceleration (requires GGML built with GGML_VULKAN=ON)", default = false})
+option("webui",  {description = "Build the HTTP WebUI server (qwen3-tts-server)", default = true})
 
 -- ---------------------------------------------------------------------------
 -- GGML paths
@@ -49,6 +61,22 @@ end
 local has_metal = is_plat("macosx") and
     os.isfile(path.join(GGML_BUILD, "src", "ggml-metal", "libggml-metal.dylib"))
 
+-- Vulkan: check for pre-built backend library
+local has_vulkan_lib = get_config("vulkan") and
+    (os.isdir(path.join(GGML_BUILD, "src", "ggml-vulkan")) or
+     os.isfile(path.join(GGML_BUILD, "src", "libggml-vulkan.a")) or
+     os.isfile(path.join(GGML_BUILD, "src", "ggml-vulkan.lib")))
+
+if get_config("vulkan") then
+    if has_vulkan_lib then
+        table.insert(GGML_LIB_DIRS_ALL, path.join(GGML_BUILD, "src", "ggml-vulkan"))
+        table.insert(GGML_LIB_DIRS_ALL, path.join(GGML_BUILD, "src", "ggml-vulkan", "Release"))
+    else
+        print("WARNING: vulkan=y but pre-built ggml-vulkan not found in ggml/build — "
+              .. "rebuild GGML with -DGGML_VULKAN=ON first")
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Helper: apply GGML settings + project-wide flags to current target.
 -- Uses {public=true} so that consumers of this static lib (via add_deps)
@@ -59,6 +87,9 @@ local function apply_common()
     add_includedirs(GGML_INC, "src", {public = true})
     add_linkdirs(table.unpack(GGML_LIB_DIRS))
     add_links("ggml", "ggml-base", "ggml-cpu")
+    if get_config("vulkan") and has_vulkan_lib then
+        add_links("ggml-vulkan")
+    end
     if is_plat("windows") then
         add_syslinks("advapi32", "user32", "kernel32")
     elseif is_plat("macosx") then
@@ -71,6 +102,10 @@ local function apply_common()
         end
     else
         add_syslinks("pthread", "dl", "m")
+        if get_config("vulkan") and has_vulkan_lib then
+            -- Vulkan loader required on Linux
+            add_syslinks("vulkan")
+        end
     end
     if get_config("timing") then
         add_defines("QWEN3_TTS_TIMING")
@@ -150,6 +185,21 @@ target("qwen3-tts-cli")
     add_files("src/main.cpp")
     add_deps("qwen3_tts")
 target_end()
+
+-- ---------------------------------------------------------------------------
+-- WebUI server executable (HTTP server + embedded static page)
+-- ---------------------------------------------------------------------------
+if get_config("webui") then
+    target("qwen3-tts-server")
+        set_kind("binary")
+        add_files("src/main_server.cpp", "src/http_server.cpp")
+        add_deps("qwen3_tts")
+        add_includedirs("src", {public = true})
+        if is_plat("windows") then
+            add_syslinks("ws2_32")
+        end
+    target_end()
+end
 
 -- ---------------------------------------------------------------------------
 -- Test executables

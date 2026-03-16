@@ -3,6 +3,11 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
+
+#ifdef _WIN32
+#  include <windows.h>
+#endif
 
 void print_usage(const char * program) {
     fprintf(stderr, "Usage: %s [options] -m <model_dir> -t <text>\n", program);
@@ -27,6 +32,36 @@ void print_usage(const char * program) {
 }
 
 int main(int argc, char ** argv) {
+#ifdef _WIN32
+    // Set the console to UTF-8 so Chinese/CJK characters display correctly.
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+
+    // Re-parse the command line through the Windows wide-char API so that
+    // Chinese (and other non-ASCII) arguments arrive as valid UTF-8 strings
+    // even when the system ANSI code page is not UTF-8 (e.g. Chinese Windows
+    // using GBK/CP936).
+    int wargc = 0;
+    wchar_t ** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    std::vector<std::string> utf8_args;
+    std::vector<char *>      utf8_argv_ptrs;
+    if (wargv) {
+        for (int wi = 0; wi < wargc; ++wi) {
+            int bytes = WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
+                                            nullptr, 0, nullptr, nullptr);
+            std::string s(static_cast<size_t>(bytes), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
+                                &s[0], bytes, nullptr, nullptr);
+            // Remove the trailing NUL that WideCharToMultiByte wrote
+            if (!s.empty() && s.back() == '\0') s.pop_back();
+            utf8_args.push_back(std::move(s));
+        }
+        for (auto & s : utf8_args) utf8_argv_ptrs.push_back(&s[0]);
+        LocalFree(wargv);
+        argc = wargc;
+        argv = utf8_argv_ptrs.data();
+    }
+#endif
     std::string model_dir;
     std::string text;
     std::string output_file = "output.wav";
