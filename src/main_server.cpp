@@ -234,31 +234,9 @@ static void print_usage(const char * prog) {
 // main
 // ---------------------------------------------------------------------------
 
-int main(int argc, char ** argv) {
-#ifdef _WIN32
-    SetConsoleCP(CP_UTF8);
-    SetConsoleOutputCP(CP_UTF8);
-    int wargc = 0;
-    wchar_t ** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
-    std::vector<std::string> utf8_args;
-    std::vector<char *>      utf8_argv_ptrs;
-    if (wargv) {
-        for (int wi = 0; wi < wargc; ++wi) {
-            int bytes = WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
-                                            nullptr, 0, nullptr, nullptr);
-            std::string s(static_cast<size_t>(bytes), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
-                                &s[0], bytes, nullptr, nullptr);
-            if (!s.empty() && s.back() == '\0') s.pop_back();
-            utf8_args.push_back(std::move(s));
-        }
-        for (auto & s : utf8_args) utf8_argv_ptrs.push_back(&s[0]);
-        LocalFree(wargv);
-        argc = wargc;
-        argv = utf8_argv_ptrs.data();
-    }
-#endif
-
+// Core argument-parsing and server logic.
+// argv is expected to be UTF-8 on all platforms.
+static int server_run(int argc, char ** argv) {
     std::string model_dir;
     uint16_t    port       = 8080;
     int32_t     n_threads  = 4;
@@ -395,3 +373,45 @@ int main(int argc, char ** argv) {
 
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Platform entry points — see main.cpp for rationale on wmain vs main.
+// ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+
+static std::vector<std::string> wargv_to_utf8(int argc, wchar_t ** wargv) {
+    std::vector<std::string> out;
+    out.reserve(static_cast<size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1,
+                                    nullptr, 0, nullptr, nullptr);
+        if (n <= 0) { out.emplace_back(); continue; }
+        std::string s(static_cast<size_t>(n), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1,
+                            &s[0], n, nullptr, nullptr);
+        if (!s.empty() && s.back() == '\0') s.pop_back();
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+int wmain(int argc, wchar_t ** wargv) {
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+
+    auto args = wargv_to_utf8(argc, wargv);
+    std::vector<char *> argv_ptrs;
+    argv_ptrs.reserve(args.size());
+    for (auto & s : args) argv_ptrs.push_back(&s[0]);
+
+    return server_run(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+}
+
+#else // POSIX
+
+int main(int argc, char ** argv) {
+    return server_run(argc, argv);
+}
+
+#endif

@@ -184,6 +184,14 @@ target("qwen3-tts-cli")
     set_kind("binary")
     add_files("src/main.cpp")
     add_deps("qwen3_tts")
+    -- On Windows, use the Unicode entry-point (wmain) so Chinese/CJK arguments
+    -- are received as UTF-16 directly from the OS, avoiding PowerShell's
+    -- ANSI code-page conversion.
+    if is_plat("windows") then
+        if is_kind("binary") then
+            add_ldflags("-municode", {force = true})
+        end
+    end
 target_end()
 
 -- ---------------------------------------------------------------------------
@@ -197,6 +205,7 @@ if get_config("webui") then
         add_includedirs("src", {public = true})
         if is_plat("windows") then
             add_syslinks("ws2_32")
+            add_ldflags("-municode", {force = true})
         end
     target_end()
 end

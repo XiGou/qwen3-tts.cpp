@@ -31,37 +31,9 @@ void print_usage(const char * program) {
     fprintf(stderr, "  %s -m ./models -t \"Hello!\" -r reference.wav -o cloned.wav\n", program);
 }
 
-int main(int argc, char ** argv) {
-#ifdef _WIN32
-    // Set the console to UTF-8 so Chinese/CJK characters display correctly.
-    SetConsoleCP(CP_UTF8);
-    SetConsoleOutputCP(CP_UTF8);
-
-    // Re-parse the command line through the Windows wide-char API so that
-    // Chinese (and other non-ASCII) arguments arrive as valid UTF-8 strings
-    // even when the system ANSI code page is not UTF-8 (e.g. Chinese Windows
-    // using GBK/CP936).
-    int wargc = 0;
-    wchar_t ** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
-    std::vector<std::string> utf8_args;
-    std::vector<char *>      utf8_argv_ptrs;
-    if (wargv) {
-        for (int wi = 0; wi < wargc; ++wi) {
-            int bytes = WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
-                                            nullptr, 0, nullptr, nullptr);
-            std::string s(static_cast<size_t>(bytes), '\0');
-            WideCharToMultiByte(CP_UTF8, 0, wargv[wi], -1,
-                                &s[0], bytes, nullptr, nullptr);
-            // Remove the trailing NUL that WideCharToMultiByte wrote
-            if (!s.empty() && s.back() == '\0') s.pop_back();
-            utf8_args.push_back(std::move(s));
-        }
-        for (auto & s : utf8_args) utf8_argv_ptrs.push_back(&s[0]);
-        LocalFree(wargv);
-        argc = wargc;
-        argv = utf8_argv_ptrs.data();
-    }
-#endif
+// Core argument-parsing and TTS logic.
+// argv is expected to be UTF-8 on all platforms.
+static int tts_run(int argc, char ** argv) {
     std::string model_dir;
     std::string text;
     std::string output_file = "output.wav";
@@ -232,3 +204,57 @@ int main(int argc, char ** argv) {
     
     return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Platform entry points
+//
+// On Windows we define wmain() so the MSVC/MinGW C runtime hands us UTF-16
+// arguments DIRECTLY from the OS — bypassing all ANSI/OEM code-page
+// conversions that PowerShell (5.x) can apply when launching native processes.
+// We convert each wchar_t argument to UTF-8 once and then call tts_run().
+//
+// On POSIX the shell / terminal is already expected to deliver UTF-8 bytes in
+// argv[], so we call tts_run() directly.
+// ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+
+static std::vector<std::string> wargv_to_utf8(int argc, wchar_t ** wargv) {
+    std::vector<std::string> out;
+    out.reserve(static_cast<size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1,
+                                    nullptr, 0, nullptr, nullptr);
+        if (n <= 0) { out.emplace_back(); continue; }
+        std::string s(static_cast<size_t>(n), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1,
+                            &s[0], n, nullptr, nullptr);
+        // WideCharToMultiByte with -1 source length includes the NUL terminator
+        // in the output byte count; pop it so std::string::size() is correct.
+        if (!s.empty() && s.back() == '\0') s.pop_back();
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+int wmain(int argc, wchar_t ** wargv) {
+    // Set the console to UTF-8 so Chinese/CJK output displays correctly.
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+
+    auto args = wargv_to_utf8(argc, wargv);
+    std::vector<char *> argv_ptrs;
+    argv_ptrs.reserve(args.size());
+    for (auto & s : args) argv_ptrs.push_back(&s[0]);
+
+    return tts_run(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+}
+
+#else // POSIX
+
+int main(int argc, char ** argv) {
+    return tts_run(argc, argv);
+}
+
+#endif
+

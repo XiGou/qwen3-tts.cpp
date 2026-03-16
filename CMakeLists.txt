@@ -211,6 +211,15 @@ target_link_libraries(qwen3tts_shared PRIVATE qwen3_tts)
 # ---------------------------------------------------------------------------
 add_executable(qwen3-tts-cli src/main.cpp)
 target_link_libraries(qwen3-tts-cli PRIVATE qwen3_tts)
+# On Windows, link with the Unicode entry-point so wmain() receives UTF-16
+# arguments directly from the OS (avoids PowerShell ANSI encoding issues).
+if(WIN32)
+    if(MSVC)
+        target_link_options(qwen3-tts-cli PRIVATE /ENTRY:wmainCRTStartup)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(qwen3-tts-cli PRIVATE -municode)
+    endif()
+endif()
 
 # ---------------------------------------------------------------------------
 # WebUI server executable
@@ -224,6 +233,11 @@ if(QWEN3_TTS_WEBUI)
     target_link_libraries(qwen3-tts-server PRIVATE qwen3_tts)
     if(WIN32)
         target_link_libraries(qwen3-tts-server PRIVATE ws2_32)
+        if(MSVC)
+            target_link_options(qwen3-tts-server PRIVATE /ENTRY:wmainCRTStartup)
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_link_options(qwen3-tts-server PRIVATE -municode)
+        endif()
     endif()
 endif()
 
