@@ -10,6 +10,14 @@
  *   GET  /          → embedded HTML page
  *   POST /api/synthesize  → multipart/form-data: returns WAV audio
  */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>
+#include <shellapi.h>
+#pragma comment(lib, "shell32.lib")
+#endif
 
 #include "qwen3_tts.h"
 #include "http_server.h"
