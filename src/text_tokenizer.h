@@ -31,6 +31,15 @@ public:
     
     // Encode with TTS format: <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
     std::vector<int32_t> encode_for_tts(const std::string & text) const;
+
+    // Build task-specific assistant prompts that mirror the upstream usage modes.
+    std::vector<int32_t> encode_for_voice_clone(const std::string & text,
+                                                const std::string & ref_text) const;
+    std::vector<int32_t> encode_for_voice_design(const std::string & text,
+                                                 const std::string & instruct) const;
+    std::vector<int32_t> encode_for_custom_voice(const std::string & text,
+                                                 const std::string & speaker,
+                                                 const std::string & instruct) const;
     
     // Decode token IDs to text
     std::string decode(const std::vector<int32_t> & tokens) const;

@@ -12,6 +12,13 @@
 
 namespace qwen3_tts {
 
+enum class tts_mode {
+    standard,
+    voice_clone,
+    voice_design,
+    custom_voice,
+};
+
 // TTS generation parameters
 struct tts_params {
     // Maximum number of audio tokens to generate
@@ -40,6 +47,12 @@ struct tts_params {
 
     // Language ID for codec (2050=en, 2069=ru, 2055=zh, 2058=ja, 2064=ko, 2053=de, 2061=fr, 2054=es)
     int32_t language_id = 2050;
+
+    // Mode-specific prompt fields aligned with Qwen3-TTS upstream examples.
+    std::string ref_text;
+    std::string instruct;
+    std::string speaker;
+    tts_mode mode = tts_mode::standard;
 
 };
 
@@ -98,6 +111,10 @@ public:
     // text: input text to synthesize
     // reference_audio: path to reference audio file (WAV, 24kHz)
     // params: generation parameters
+    tts_result synthesize_with_voice(const std::string & text,
+                                      const std::string & reference_audio,
+                                      const std::string & ref_text,
+                                      const tts_params & params = tts_params());
     tts_result synthesize_with_voice(const std::string & text,
                                       const std::string & reference_audio,
                                       const tts_params & params = tts_params());

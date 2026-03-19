@@ -120,16 +120,56 @@ bool Qwen3TTS::load_models(const std::string & model_dir) {
     
     // Construct model paths — prefer quantized (q8_0) over full-precision (f16)
     std::string tts_model_path;
-    std::string q8_path = model_dir + "/qwen3-tts-0.6b-q8_0.gguf";
-    std::string f16_path = model_dir + "/qwen3-tts-0.6b-f16.gguf";
-    FILE * q8_check = fopen(q8_path.c_str(), "r");
-    if (q8_check) {
-        fclose(q8_check);
-        tts_model_path = q8_path;
-    } else {
-        tts_model_path = f16_path;
+    const char * tts_candidates[] = {
+        "/qwen3-tts-0.6b-q8_0.gguf",
+        "/qwen3-tts-0.6b-f16.gguf",
+        "/qwen3-tts-1.7b-q8_0.gguf",
+        "/qwen3-tts-1.7b-f16.gguf",
+        "/qwen3-tts-0.6b-base-q8_0.gguf",
+        "/qwen3-tts-0.6b-base-f16.gguf",
+        "/qwen3-tts-1.7b-base-q8_0.gguf",
+        "/qwen3-tts-1.7b-base-f16.gguf",
+        "/qwen3-tts-0.6b-voice-design-q8_0.gguf",
+        "/qwen3-tts-0.6b-voice-design-f16.gguf",
+        "/qwen3-tts-1.7b-voice-design-q8_0.gguf",
+        "/qwen3-tts-1.7b-voice-design-f16.gguf",
+        "/qwen3-tts-0.6b-custom-voice-q8_0.gguf",
+        "/qwen3-tts-0.6b-custom-voice-f16.gguf",
+        "/qwen3-tts-1.7b-custom-voice-q8_0.gguf",
+        "/qwen3-tts-1.7b-custom-voice-f16.gguf",
+    };
+    for (const char * suffix : tts_candidates) {
+        std::string candidate = model_dir + suffix;
+        FILE * check = fopen(candidate.c_str(), "r");
+        if (!check) {
+            continue;
+        }
+        fclose(check);
+        tts_model_path = candidate;
+        break;
     }
-    std::string tokenizer_model_path = model_dir + "/qwen3-tts-tokenizer-f16.gguf";
+    if (tts_model_path.empty()) {
+        tts_model_path = model_dir + "/qwen3-tts-0.6b-f16.gguf";
+    }
+
+    std::string tokenizer_model_path;
+    const char * decoder_candidates[] = {
+        "/qwen3-tts-tokenizer-f16.gguf",
+        "/qwen3-tts-tokenizer-q8_0.gguf",
+    };
+    for (const char * suffix : decoder_candidates) {
+        std::string candidate = model_dir + suffix;
+        FILE * check = fopen(candidate.c_str(), "r");
+        if (!check) {
+            continue;
+        }
+        fclose(check);
+        tokenizer_model_path = candidate;
+        break;
+    }
+    if (tokenizer_model_path.empty()) {
+        tokenizer_model_path = model_dir + "/qwen3-tts-tokenizer-f16.gguf";
+    }
     tts_model_path_ = tts_model_path;
     decoder_model_path_ = tokenizer_model_path;
     encoder_loaded_ = false;
@@ -223,6 +263,7 @@ tts_result Qwen3TTS::synthesize(const std::string & text,
 
 tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
                                             const std::string & reference_audio,
+                                            const std::string & ref_text,
                                             const tts_params & params) {
     tts_result result;
     
@@ -241,7 +282,16 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
         ref_samples = std::move(resampled);
     }
     
-    return synthesize_with_voice(text, ref_samples.data(), (int32_t)ref_samples.size(), params);
+    tts_params updated = params;
+    updated.mode = tts_mode::voice_clone;
+    updated.ref_text = ref_text;
+    return synthesize_with_voice(text, ref_samples.data(), (int32_t)ref_samples.size(), updated);
+}
+
+tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
+                                            const std::string & reference_audio,
+                                            const tts_params & params) {
+    return synthesize_with_voice(text, reference_audio, params.ref_text, params);
 }
 
 tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
@@ -372,7 +422,22 @@ tts_result Qwen3TTS::synthesize_internal(const std::string & text,
     
     // Step 2: Tokenize input text
     int64_t t_tokenize_start = get_time_ms();
-    std::vector<int32_t> text_tokens = tokenizer_.encode_for_tts(text);
+    std::vector<int32_t> text_tokens;
+    switch (params.mode) {
+        case tts_mode::voice_clone:
+            text_tokens = tokenizer_.encode_for_voice_clone(text, params.ref_text);
+            break;
+        case tts_mode::voice_design:
+            text_tokens = tokenizer_.encode_for_voice_design(text, params.instruct);
+            break;
+        case tts_mode::custom_voice:
+            text_tokens = tokenizer_.encode_for_custom_voice(text, params.speaker, params.instruct);
+            break;
+        case tts_mode::standard:
+        default:
+            text_tokens = tokenizer_.encode_for_tts(text);
+            break;
+    }
     result.t_tokenize_ms = get_time_ms() - t_tokenize_start;
     sample_memory("synth/after-tokenize");
     

@@ -170,8 +170,29 @@ models\
 .\build\Release\qwen3-tts-cli.exe `
     -m models `
     -r examples\readme_clone_input.wav `
+    --ref-text "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you." `
     -t "This is a voice cloning example on Windows." `
     -o cloned.wav
+```
+
+### Voice design
+
+```powershell
+.\build\Release\qwen3-tts-cli.exe `
+    -m models `
+    --voice-description "Female, calm, warm, and confident, with a broadcast-style delivery." `
+    -t "This example uses a natural-language voice design prompt." `
+    -o designed.wav
+```
+
+### Built-in speaker selection
+
+```powershell
+.\build\Release\qwen3-tts-cli.exe `
+    -m models `
+    --speaker Cherry `
+    -t "This example asks the runtime to use a built-in speaker preset." `
+    -o builtin.wav
 ```
 
 ### CLI options
@@ -182,6 +203,9 @@ models\
 | `-t, --text <text>` | Text to synthesize | (required) |
 | `-o, --output <file>` | Output WAV file path | `output.wav` |
 | `-r, --reference <file>` | Reference audio for voice cloning | (none) |
+| `--ref-text <text>` | Transcript for the reference audio prompt | (none) |
+| `--voice-description <text>` | Natural-language voice design prompt | (none) |
+| `--speaker <name>` | Built-in speaker name for CustomVoice-style prompting | (none) |
 | `--temperature <val>` | Sampling temperature (0 = greedy) | 0.9 |
 | `--top-k <n>` | Top-k sampling (0 = disabled) | 50 |
 | `--max-tokens <n>` | Maximum audio frames to generate | 4096 |
