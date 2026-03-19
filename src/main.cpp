@@ -12,6 +12,9 @@ void print_usage(const char * program) {
     fprintf(stderr, "  -t, --text <text>      Text to synthesize (required)\n");
     fprintf(stderr, "  -o, --output <file>    Output WAV file (default: output.wav)\n");
     fprintf(stderr, "  -r, --reference <file> Reference audio for voice cloning\n");
+    fprintf(stderr, "  --ref-text <text>      Transcript for the reference audio\n");
+    fprintf(stderr, "  --voice-description <text> Natural-language voice design prompt\n");
+    fprintf(stderr, "  --speaker <name>       Built-in speaker name for CustomVoice models\n");
     fprintf(stderr, "  --temperature <val>    Sampling temperature (default: 0.9, 0=greedy)\n");
     fprintf(stderr, "  --top-k <n>            Top-k sampling (default: 50, 0=disabled)\n");
     fprintf(stderr, "  --top-p <val>          Top-p sampling (default: 1.0)\n");
@@ -23,7 +26,9 @@ void print_usage(const char * program) {
     fprintf(stderr, "\n");
     fprintf(stderr, "Example:\n");
     fprintf(stderr, "  %s -m ./models -t \"Hello, world!\" -o hello.wav\n", program);
-    fprintf(stderr, "  %s -m ./models -t \"Hello!\" -r reference.wav -o cloned.wav\n", program);
+    fprintf(stderr, "  %s -m ./models -t \"Hello!\" -r reference.wav --ref-text \"Reference transcript\" -o cloned.wav\n", program);
+    fprintf(stderr, "  %s -m ./models -t \"Hello!\" --voice-description \"Warm mature female voice\" -o designed.wav\n", program);
+    fprintf(stderr, "  %s -m ./models -t \"Hello!\" --speaker Cherry -o builtin.wav\n", program);
 }
 
 int main(int argc, char ** argv) {
@@ -31,6 +36,9 @@ int main(int argc, char ** argv) {
     std::string text;
     std::string output_file = "output.wav";
     std::string reference_audio;
+    std::string reference_text;
+    std::string voice_description;
+    std::string speaker;
     
     qwen3_tts::tts_params params;
     
@@ -65,6 +73,24 @@ int main(int argc, char ** argv) {
                 return 1;
             }
             reference_audio = argv[i];
+        } else if (arg == "--ref-text") {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: missing reference text\n");
+                return 1;
+            }
+            reference_text = argv[i];
+        } else if (arg == "--voice-description") {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: missing voice description\n");
+                return 1;
+            }
+            voice_description = argv[i];
+        } else if (arg == "--speaker") {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: missing speaker name\n");
+                return 1;
+            }
+            speaker = argv[i];
         } else if (arg == "--temperature") {
             if (++i >= argc) {
                 fprintf(stderr, "Error: missing temperature value\n");
@@ -157,14 +183,30 @@ int main(int argc, char ** argv) {
     
     // Generate speech
     qwen3_tts::tts_result result;
-    
-    if (reference_audio.empty()) {
-        fprintf(stderr, "Synthesizing: \"%s\"\n", text.c_str());
-        result = tts.synthesize(text, params);
-    } else {
+
+    params.ref_text = reference_text;
+    params.instruct = voice_description;
+    params.speaker = speaker;
+
+    if (!reference_audio.empty()) {
+        params.mode = qwen3_tts::tts_mode::voice_clone;
         fprintf(stderr, "Synthesizing with voice cloning: \"%s\"\n", text.c_str());
         fprintf(stderr, "Reference audio: %s\n", reference_audio.c_str());
-        result = tts.synthesize_with_voice(text, reference_audio, params);
+        if (!reference_text.empty()) {
+            fprintf(stderr, "Reference text provided (%zu chars)\n", reference_text.size());
+        }
+        result = tts.synthesize_with_voice(text, reference_audio, reference_text, params);
+    } else if (!voice_description.empty()) {
+        params.mode = qwen3_tts::tts_mode::voice_design;
+        fprintf(stderr, "Synthesizing with voice design prompt: \"%s\"\n", text.c_str());
+        result = tts.synthesize(text, params);
+    } else if (!speaker.empty()) {
+        params.mode = qwen3_tts::tts_mode::custom_voice;
+        fprintf(stderr, "Synthesizing with built-in speaker '%s': \"%s\"\n", speaker.c_str(), text.c_str());
+        result = tts.synthesize(text, params);
+    } else {
+        fprintf(stderr, "Synthesizing: \"%s\"\n", text.c_str());
+        result = tts.synthesize(text, params);
     }
     
     if (!result.success) {

@@ -329,6 +329,53 @@ std::vector<int32_t> TextTokenizer::encode_for_tts(const std::string & text) con
     return tokens;
 }
 
+std::vector<int32_t> TextTokenizer::encode_for_voice_clone(const std::string & text,
+                                                           const std::string & ref_text) const {
+    if (ref_text.empty()) {
+        return encode_for_tts(text);
+    }
+
+    std::string prompt;
+    prompt += "Reference transcript:\n";
+    prompt += ref_text;
+    prompt += "\n\nTarget speech:\n";
+    prompt += text;
+    return encode_for_tts(prompt);
+}
+
+std::vector<int32_t> TextTokenizer::encode_for_voice_design(const std::string & text,
+                                                            const std::string & instruct) const {
+    if (instruct.empty()) {
+        return encode_for_tts(text);
+    }
+
+    std::string prompt;
+    prompt += "Voice description:\n";
+    prompt += instruct;
+    prompt += "\n\nTarget speech:\n";
+    prompt += text;
+    return encode_for_tts(prompt);
+}
+
+std::vector<int32_t> TextTokenizer::encode_for_custom_voice(const std::string & text,
+                                                            const std::string & speaker,
+                                                            const std::string & instruct) const {
+    std::string prompt;
+    if (!speaker.empty()) {
+        prompt += "Use built-in speaker: ";
+        prompt += speaker;
+        prompt += "\n";
+    }
+    if (!instruct.empty()) {
+        prompt += "Voice style instruction:\n";
+        prompt += instruct;
+        prompt += "\n";
+    }
+    prompt += "\nTarget speech:\n";
+    prompt += text;
+    return encode_for_tts(prompt);
+}
+
 std::string TextTokenizer::decode(const std::vector<int32_t> & tokens) const {
     std::string result;
     for (int32_t token : tokens) {
