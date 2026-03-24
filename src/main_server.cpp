@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <cstdlib>
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -222,6 +223,86 @@ static int32_t lang_to_id(const std::string & lang) {
     return 2050; // default: English
 }
 
+static bool parse_embedding_text(const std::string & text, std::vector<float> & embedding, std::string & error) {
+    embedding.clear();
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (char c : text) {
+        if (c == '[' || c == ']' || c == ',' || c == '\n' || c == '\r' || c == '\t') normalized += ' ';
+        else normalized += c;
+    }
+
+    std::istringstream iss(normalized);
+    std::string token;
+    while (iss >> token) {
+        char * end = nullptr;
+        const float value = std::strtof(token.c_str(), &end);
+        if (end == token.c_str() || (end && *end != '\0')) {
+            error = "invalid float in speaker embedding: " + token;
+            embedding.clear();
+            return false;
+        }
+        embedding.push_back(value);
+    }
+
+    if (embedding.empty()) {
+        error = "speaker embedding is empty";
+        return false;
+    }
+
+    return true;
+}
+
+static bool parse_int_field(const std::string & text, int32_t & value) {
+    char * end = nullptr;
+    const long parsed = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || (end && *end != '\0')) {
+        return false;
+    }
+    value = static_cast<int32_t>(parsed);
+    return true;
+}
+
+static bool parse_float_field(const std::string & text, float & value) {
+    char * end = nullptr;
+    value = std::strtof(text.c_str(), &end);
+    if (end == text.c_str() || (end && *end != '\0')) {
+        return false;
+    }
+    return true;
+}
+
+static void resample_to_24khz(std::vector<float> & samples, int sample_rate) {
+    if (sample_rate == 24000) {
+        return;
+    }
+    fprintf(stderr, "Resampling audio from %d Hz to %d Hz...\n", sample_rate, 24000);
+    const double ratio = (double)sample_rate / 24000.0;
+    const int output_len = (int)((double)samples.size() / ratio);
+    std::vector<float> resampled(output_len);
+    for (int i = 0; i < output_len; ++i) {
+        const double src_idx = i * ratio;
+        const int idx0 = (int)src_idx;
+        const int idx1 = idx0 + 1;
+        const double frac = src_idx - idx0;
+        if (idx1 >= (int)samples.size()) {
+            resampled[i] = samples.back();
+        } else {
+            resampled[i] = (float)((1.0 - frac) * samples[idx0] + frac * samples[idx1]);
+        }
+    }
+    samples = std::move(resampled);
+}
+
+static http_server::Response json_response(int status, const std::string & body) {
+    http_server::Response resp;
+    resp.status = status;
+    resp.content_type = "application/json";
+    resp.body = body;
+    return resp;
+}
+
+
 // ---------------------------------------------------------------------------
 // Usage
 // ---------------------------------------------------------------------------
@@ -294,81 +375,170 @@ static int server_run(int argc, char ** argv) {
         return r;
     });
 
+    // POST /api/extract_embedding → multipart form → JSON embedding
+    server.handle("POST", "/api/extract_embedding",
+        [&tts](const http_server::Request & req) -> http_server::Response {
+
+        auto ct_it = req.headers.find("content-type");
+        if (ct_it == req.headers.end()) {
+            return json_response(400, "{\"error\":\"missing Content-Type\"}");
+        }
+        const std::string boundary = get_param(ct_it->second, "boundary");
+        if (boundary.empty()) {
+            return json_response(400, "{\"error\":\"missing boundary in Content-Type\"}");
+        }
+
+        const auto fields = parse_multipart(req.body, boundary);
+        std::string ref_wav_data;
+        for (const auto & f : fields) {
+            if (f.name == "ref_audio" && !f.filename.empty()) {
+                ref_wav_data = f.data;
+            }
+        }
+
+        if (ref_wav_data.empty()) {
+            return json_response(400, "{\"error\":\"ref_audio is required\"}");
+        }
+
+        const std::string tmp_path = write_temp_wav(ref_wav_data);
+        if (tmp_path.empty()) {
+            return json_response(500, "{\"error\":\"failed to create temp file\"}");
+        }
+
+        std::vector<float> ref_samples;
+        int ref_sample_rate = 0;
+        if (!qwen3_tts::load_audio_file(tmp_path, ref_samples, ref_sample_rate)) {
+            remove(tmp_path.c_str());
+            return json_response(500, "{\"error\":\"failed to load reference audio\"}");
+        }
+        remove(tmp_path.c_str());
+        resample_to_24khz(ref_samples, ref_sample_rate);
+
+        qwen3_tts::tts_params params;
+        params.print_timing = false;
+        std::vector<float> speaker_embedding;
+        if (!tts.extract_speaker_embedding(ref_samples.data(), (int32_t)ref_samples.size(), speaker_embedding, params)) {
+            return json_response(500, std::string("{\"error\":\"") + tts.get_error() + "\"}");
+        }
+
+        std::ostringstream json;
+        json << "{\"embedding_size\":" << speaker_embedding.size() << ",\"embedding\":[";
+        for (size_t i = 0; i < speaker_embedding.size(); ++i) {
+            if (i > 0) json << ',';
+            json << speaker_embedding[i];
+        }
+        json << "]}";
+        return json_response(200, json.str());
+    });
+
     // POST /api/synthesize → multipart form → WAV audio
     server.handle("POST", "/api/synthesize",
         [&tts, n_threads](const http_server::Request & req) -> http_server::Response {
 
-        // Extract multipart boundary
         auto ct_it = req.headers.find("content-type");
         if (ct_it == req.headers.end()) {
-            return http_server::Response::error(400, "missing Content-Type");
+            return json_response(400, "{\"error\":\"missing Content-Type\"}");
         }
-        std::string boundary = get_param(ct_it->second, "boundary");
+        const std::string boundary = get_param(ct_it->second, "boundary");
         if (boundary.empty()) {
-            return http_server::Response::error(400, "missing boundary in Content-Type");
+            return json_response(400, "{\"error\":\"missing boundary in Content-Type\"}");
         }
 
-        // Parse form fields
-        auto fields = parse_multipart(req.body, boundary);
+        const auto fields = parse_multipart(req.body, boundary);
 
-        std::string text, language = "en", ref_wav_data;
+        std::string text, language = "en", ref_wav_data, mode = "basic", speaker_embedding_text;
         qwen3_tts::tts_params params;
         params.n_threads = n_threads;
 
         for (const auto & f : fields) {
-            if (f.name == "text")        text          = f.data;
-            else if (f.name == "language")    language  = f.data;
-            else if (f.name == "temperature") params.temperature      = std::stof(f.data);
-            else if (f.name == "top_k")       params.top_k            = std::stoi(f.data);
-            else if (f.name == "max_tokens")  params.max_audio_tokens = std::stoi(f.data);
-            else if (f.name == "rep_penalty") params.repetition_penalty = std::stof(f.data);
-            else if (f.name == "threads")     params.n_threads        = std::stoi(f.data);
-            else if (f.name == "ref_audio" && !f.filename.empty()) ref_wav_data = f.data;
+            if (f.name == "text") {
+                text = f.data;
+            } else if (f.name == "language") {
+                language = f.data;
+            } else if (f.name == "mode") {
+                mode = f.data;
+            } else if (f.name == "temperature" && !f.data.empty()) {
+                if (!parse_float_field(f.data, params.temperature)) {
+                    return json_response(400, "{\"error\":\"invalid temperature\"}");
+                }
+            } else if (f.name == "top_k" && !f.data.empty()) {
+                if (!parse_int_field(f.data, params.top_k)) {
+                    return json_response(400, "{\"error\":\"invalid top_k\"}");
+                }
+            } else if (f.name == "top_p" && !f.data.empty()) {
+                if (!parse_float_field(f.data, params.top_p)) {
+                    return json_response(400, "{\"error\":\"invalid top_p\"}");
+                }
+            } else if (f.name == "max_tokens" && !f.data.empty()) {
+                if (!parse_int_field(f.data, params.max_audio_tokens)) {
+                    return json_response(400, "{\"error\":\"invalid max_tokens\"}");
+                }
+            } else if (f.name == "rep_penalty" && !f.data.empty()) {
+                if (!parse_float_field(f.data, params.repetition_penalty)) {
+                    return json_response(400, "{\"error\":\"invalid rep_penalty\"}");
+                }
+            } else if (f.name == "threads" && !f.data.empty()) {
+                if (!parse_int_field(f.data, params.n_threads)) {
+                    return json_response(400, "{\"error\":\"invalid threads\"}");
+                }
+            } else if (f.name == "speaker_embedding") {
+                speaker_embedding_text = f.data;
+            } else if (f.name == "ref_audio" && !f.filename.empty()) {
+                ref_wav_data = f.data;
+            }
         }
 
         if (text.empty()) {
-            return http_server::Response::error(400, "text is required");
+            return json_response(400, "{\"error\":\"text is required\"}");
         }
 
-        params.language_id   = lang_to_id(language);
-        params.print_timing  = false;
+        params.language_id = lang_to_id(language);
+        params.print_timing = false;
 
-        fprintf(stderr, "Synthesizing: \"%s\" (lang=%s)\n",
-                text.c_str(), language.c_str());
+        fprintf(stderr, "Synthesizing: \"%s\" (lang=%s, mode=%s)\n",
+                text.c_str(), language.c_str(), mode.c_str());
 
         qwen3_tts::tts_result result;
-        if (!ref_wav_data.empty()) {
-            // Write reference audio to a temp file and use voice cloning
-            std::string tmp_path = write_temp_wav(ref_wav_data);
+        if (mode == "basic") {
+            result = tts.synthesize(text, params);
+        } else if (mode == "clone") {
+            if (ref_wav_data.empty()) {
+                return json_response(400, "{\"error\":\"ref_audio is required for clone mode\"}");
+            }
+            const std::string tmp_path = write_temp_wav(ref_wav_data);
             if (tmp_path.empty()) {
-                return http_server::Response::error(500, "failed to create temp file");
+                return json_response(500, "{\"error\":\"failed to create temp file\"}");
             }
             result = tts.synthesize_with_voice(text, tmp_path, params);
-            // Clean up temp file
             remove(tmp_path.c_str());
+        } else if (mode == "embedding") {
+            std::vector<float> speaker_embedding;
+            std::string parse_error;
+            if (!parse_embedding_text(speaker_embedding_text, speaker_embedding, parse_error)) {
+                return json_response(400, std::string("{\"error\":\"") + parse_error + "\"}");
+            }
+            result = tts.synthesize_with_embedding(text, speaker_embedding.data(), (int32_t)speaker_embedding.size(), params);
         } else {
-            result = tts.synthesize(text, params);
+            return json_response(400, std::string("{\"error\":\"unsupported mode: ") + mode + "\"}");
         }
 
         if (!result.success) {
-            return http_server::Response::error(500, result.error_msg);
+            return json_response(500, std::string("{\"error\":\"") + result.error_msg + "\"}");
         }
 
-        // Encode to WAV bytes
-        std::string wav = samples_to_wav(result.audio, result.sample_rate);
-        float duration = static_cast<float>(result.audio.size()) /
-                         static_cast<float>(result.sample_rate);
+        const std::string wav = samples_to_wav(result.audio, result.sample_rate);
+        const float duration = static_cast<float>(result.audio.size()) / static_cast<float>(result.sample_rate);
 
         http_server::Response resp;
-        resp.status       = 200;
+        resp.status = 200;
         resp.content_type = "audio/wav";
-        resp.body         = wav;
-        // Informational headers consumed by the JavaScript UI
+        resp.body = wav;
         resp.headers["X-Audio-Duration"] = std::to_string(duration);
-        resp.headers["X-Timing-Ms"]      = std::to_string(result.t_generate_ms);
+        resp.headers["X-Timing-Ms"] = std::to_string(result.t_generate_ms);
+        resp.headers["X-Synthesis-Mode"] = mode;
 
-        fprintf(stderr, "Done. Duration: %.2f s  |  Generate: %lld ms\n",
-                duration, (long long)result.t_generate_ms);
+        fprintf(stderr, "Done. Duration: %.2f s  |  Generate: %lld ms  |  Mode: %s\n",
+                duration, (long long)result.t_generate_ms, mode.c_str());
 
         return resp;
     });
